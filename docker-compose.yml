@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: finanzas_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finanzas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finanzas}
+      POSTGRES_DB: ${POSTGRES_DB:-finanzas}
+    volumes:
+      - finanzas_db_data:/var/lib/postgresql/data
+    # Sin "ports": la base de datos solo es accesible desde la red interna de
+    # Docker. Publicarla expondria Postgres a toda la red local.
+    # Para conectar un cliente SQL puntualmente:
+    #   docker compose exec db psql -U finanzas -d finanzas
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finanzas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: finanzas_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finanzas}:${POSTGRES_PASSWORD:-finanzas}@db:5432/${POSTGRES_DB:-finanzas}
+      BASE_CURRENCY: ${BASE_CURRENCY:-EUR}
+      PRICE_REFRESH_SECONDS: ${PRICE_REFRESH_SECONDS:-900}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Sin "ports": el backend lo alcanza nginx por la red interna (backend:8000).
+    # El 8000 de aqui es el puerto INTERNO del contenedor, fijado por uvicorn en
+    # el Dockerfile; no ocupa el 8000 de tu maquina.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Ruta relativa: el navegador pide /api/... al mismo origen y nginx
+        # hace de proxy. No se hornea ningun localhost en el JS, asi que
+        # funciona igual en tu portatil que en un servidor remoto.
+        VITE_API_URL: ${FRONTEND_API_URL:-/api}
+    container_name: finanzas_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    # Unico puerto publicado de todo el sistema.
+    ports:
+      - "${FRONTEND_PORT:-8093}:80"
+
+volumes:
+  finanzas_db_data:
